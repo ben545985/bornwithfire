@@ -18,6 +18,31 @@ let evolutionChannel = null;
 // Track users waiting for /edit-compressor input
 const editCompressorPending = new Set();
 
+const DISCORD_MAX_LENGTH = 2000;
+
+async function sendLongReply(message, text) {
+  if (text.length <= DISCORD_MAX_LENGTH) {
+    return message.reply(text);
+  }
+  // Split into chunks, prefer splitting at newlines
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= DISCORD_MAX_LENGTH) {
+      chunks.push(remaining);
+      break;
+    }
+    let splitAt = remaining.lastIndexOf('\n', DISCORD_MAX_LENGTH);
+    if (splitAt < DISCORD_MAX_LENGTH / 2) splitAt = DISCORD_MAX_LENGTH;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).replace(/^\n/, '');
+  }
+  await message.reply(chunks[0]);
+  for (let i = 1; i < chunks.length; i++) {
+    await message.channel.send(chunks[i]);
+  }
+}
+
 function sendDebug(lines) {
   if (!debugChannel) return;
   const text = lines.join('\n');
@@ -139,7 +164,7 @@ client.on('messageCreate', async (message) => {
     try {
       const { reply, debug } = await manager.handleSearch(userId, query);
       sendDebug([`🌐 /search: ${query.slice(0, 50)}`, ...debug]);
-      return message.reply(reply);
+      return sendLongReply(message, reply);
     } catch (err) {
       console.error('[search error]', err.message);
       return message.reply('搜索失败，稍后再试');
@@ -152,7 +177,7 @@ client.on('messageCreate', async (message) => {
     try {
       const { reply, debug } = await manager.handleRecall(userId, query);
       sendDebug([`📨 /recall: ${query.slice(0, 50)}`, ...debug]);
-      return message.reply(reply);
+      return sendLongReply(message, reply);
     } catch (err) {
       console.error('[recall error]', err.message);
       return message.reply('回忆失败，稍后再试');
@@ -230,7 +255,7 @@ client.on('messageCreate', async (message) => {
       .map((a) => a.url);
     const { reply, debug, dissatisfied } = await manager.handleMessage(userId, content, imageUrls);
     sendDebug([`📨 用户: ${content.slice(0, 50)}`, ...debug]);
-    await message.reply(reply);
+    await sendLongReply(message, reply);
 
     if (dissatisfied) {
       sendEvolution([`⚠️ 检测到不满信号 — 用户 ${userId}: "${content.slice(0, 80)}"`]);
