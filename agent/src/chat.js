@@ -2,6 +2,8 @@ const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 
+const { search } = require('./library');
+
 const MODEL = 'claude-sonnet-4-20250514';
 const SOUL_PATH = path.resolve(__dirname, '../SOUL.md');
 const MAX_MESSAGES = 20;
@@ -61,10 +63,16 @@ function createChat(anthropicClient) {
 
     messages.push({ role: 'user', content });
 
+    let systemPrompt = loadSystemPrompt();
+    const libraryHits = search(userMessage || '');
+    if (libraryHits.length > 0) {
+      systemPrompt += '\n\n以下是相关背景资料：\n' + libraryHits.join('\n\n');
+    }
+
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 1024,
-      system: loadSystemPrompt(),
+      system: systemPrompt,
       messages,
     });
 
