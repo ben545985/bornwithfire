@@ -1,5 +1,3 @@
-const fs = require('fs');
-const path = require('path');
 const library = require('./library');
 const internal = require('./sessions/internal');
 const { createExternal } = require('./sessions/external');
@@ -161,42 +159,47 @@ function createSessionManager() {
     const proposalText = await internal.propose(diagnosisText);
     const verdict = await internal.judge(diagnosisText, proposalText);
 
-    // Auto-execute safe operations
-    let actionResult = '';
-    if (verdict.decision === 'approve') {
-      const action = verdict.action || '';
-      // Safe: create new empty md file
-      const newFileMatch = action.match(/新建.*?(\S+\.md)/);
-      if (newFileMatch) {
-        const newFile = newFileMatch[1];
-        const libDir = path.resolve(__dirname, '../library');
-        const filePath = path.join(libDir, newFile);
-        if (!fs.existsSync(filePath)) {
-          fs.writeFileSync(filePath, `---\ntags: 待补充\nsummary: 待补充\n---\n待补充内容\n`);
-          actionResult = `已自动创建 library/${newFile}`;
+    const oneTimeAction = verdict.one_time_action || 'none';
+    const systemSuggestion = verdict.system_suggestion || 'none';
+
+    // Execute one-time action if applicable
+    let oneTimeResult = '';
+    if (oneTimeAction !== 'none') {
+      // Try to execute: fullload a file, re-search, etc.
+      const fileMatch = oneTimeAction.match(/(?:加载|fullload|读取).*?(\S+\.md)/i);
+      if (fileMatch) {
+        const file = library.getFileContent(fileMatch[1]);
+        if (file) {
+          external.setFullloadContext(userId, file.content);
+          oneTimeResult = `已加载 ${fileMatch[1]}（${file.content.length}字）到下次回复`;
         } else {
-          actionResult = `library/${newFile} 已存在，跳过创建`;
+          oneTimeResult = `文件 ${fileMatch[1]} 不存在`;
         }
       }
-      // Safe: add tags to existing file
-      const addTagMatch = action.match(/新增.*?tag.*?[：:](.+)/);
-      if (addTagMatch && !actionResult) {
-        actionResult = `建议新增 tag: ${addTagMatch[1].trim()}（需手动编辑文件）`;
+      // Try re-search with different keywords
+      const searchMatch = oneTimeAction.match(/(?:搜索|查找|检索).*?[：:"""](.+?)["""]?$/);
+      if (searchMatch && !oneTimeResult) {
+        const query = searchMatch[1].trim();
+        const { context } = await resolveContext(query, true);
+        if (context) {
+          external.setFullloadContext(userId, context);
+          oneTimeResult = `已用"${query}"重新检索并注入结果`;
+        } else {
+          oneTimeResult = `用"${query}"重新检索未找到相关内容`;
+        }
       }
-      if (!actionResult) {
-        actionResult = `批准操作: ${action}`;
+      if (!oneTimeResult) {
+        oneTimeResult = `一次性操作: ${oneTimeAction}`;
       }
-    } else if (verdict.decision === 'human_review') {
-      actionResult = '⏳ 等待人类审批';
-    } else {
-      actionResult = `已拒绝: ${verdict.reason || '不安全的操作'}`;
     }
 
     return {
       diagnosis: diagnosisText,
       proposal: proposalText,
       verdict,
-      actionResult,
+      oneTimeAction,
+      oneTimeResult,
+      systemSuggestion,
     };
   }
 

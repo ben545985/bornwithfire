@@ -162,7 +162,7 @@ async function judge(diagnosis, proposal) {
     messages: [
       {
         role: 'system',
-        content: '你是裁判员。评估诊断和建议方案。你可以批准以下操作：建议新增 tag、建议新建空 md 文件。你不能批准：修改 SOUL.md、删除文件、修改 COMPRESSOR_PROMPT.md（需人类审批）。输出 JSON：{ "decision": "approve/reject/human_review", "action": "具体操作描述", "reason": "理由" }',
+        content: '你是裁判员。评估诊断和建议。你有两种权限：\n第一，一次性决策：你可以决定并执行针对当前问题的临时操作，如重新搜索、全文加载某文件、用不同关键词再查一次、直接回复用户特定内容。这些操作只影响这一次，不改变系统。你有完整决策权。\n第二，系统级建议：如果你发现需要永久性修改（创建文件、修改tag、改压缩规则、改配置），只能提建议，由人类管理员决定。你没有执行权。\n输出 JSON：\n{ "one_time_action": "本次执行的临时操作描述，或 none", "system_suggestion": "给人类管理员的系统改进建议，或 none" }',
       },
       {
         role: 'user',
@@ -179,7 +179,7 @@ async function judge(diagnosis, proposal) {
     if (match) {
       try { return JSON.parse(match[0]); } catch { /* fall through */ }
     }
-    return { decision: 'human_review', action: text, reason: '无法解析裁判员输出' };
+    return { one_time_action: 'none', system_suggestion: text };
   }
 }
 

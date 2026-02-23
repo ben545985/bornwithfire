@@ -171,17 +171,33 @@ client.on('messageCreate', async (message) => {
   if (cmd === '/evolve') {
     try {
       const result = await manager.handleEvolve(userId);
-      sendEvolution([
+      const evoLines = [
         '⚠️ 用户不满事件',
         `🔍 诊断员：${result.diagnosis}`,
         `💡 方案员：${result.proposal}`,
-        `⚖️ 裁判员：${JSON.stringify(result.verdict)}`,
-        `📋 执行结果：${result.actionResult}`,
-      ]);
-      sendDebug([`🔧 /evolve — 用户 ${userId}: ${result.actionResult}`]);
-      return message.reply(
-        `自检完成：\n🔍 诊断：${result.diagnosis}\n💡 建议：${result.proposal}\n⚖️ 结果：${result.actionResult}`
-      );
+      ];
+
+      // One-time action
+      if (result.oneTimeAction !== 'none') {
+        evoLines.push(`⚡ 一次性操作：${result.oneTimeResult}`);
+      }
+
+      // System suggestion → only to #bwf-evolution for human review
+      if (result.systemSuggestion !== 'none') {
+        evoLines.push(`📋 系统改进建议（需人类审批）：\n${result.systemSuggestion}`);
+      }
+
+      sendEvolution(evoLines);
+      sendDebug([`🔧 /evolve — 用户 ${userId}`]);
+
+      let replyText = `自检完成：\n🔍 诊断：${result.diagnosis}\n💡 建议：${result.proposal}`;
+      if (result.oneTimeAction !== 'none') {
+        replyText += `\n⚡ 已执行：${result.oneTimeResult}`;
+      }
+      if (result.systemSuggestion !== 'none') {
+        replyText += `\n📋 系统改进建议已提交到 #bwf-evolution，等待管理员审批。`;
+      }
+      return message.reply(replyText);
     } catch (err) {
       console.error('[evolve error]', err.message);
       return message.reply('自检失败，稍后再试');
