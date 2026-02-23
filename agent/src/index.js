@@ -1,11 +1,11 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
-const { createChat } = require('./chat');
+const { createSessionManager } = require('./session-manager');
 const { loadLibrary } = require('./library');
 
 const CHANNEL_NAME = 'bornwithfire';
-const chat = createChat();
+const manager = createSessionManager();
 const startTime = Date.now();
 
 const client = new Client({
@@ -24,17 +24,18 @@ client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (message.channel.name !== CHANNEL_NAME) return;
 
-  const cmd = message.content.trim().toLowerCase();
+  const content = message.content.trim();
+  const cmd = content.toLowerCase();
   const userId = message.author.id;
 
   if (cmd === '/reset') {
-    chat.clearHistory(userId);
+    manager.external.clearHistory(userId);
     return message.reply('对话已重置。');
   }
 
   if (cmd === '/compress') {
     try {
-      const { count, summary } = await chat.compress(userId);
+      const { count } = await manager.external.compress(userId);
       if (count === 0) return message.reply('当前没有对话历史可压缩。');
       return message.reply(`对话已压缩。之前 ${count} 条消息压缩为摘要。`);
     } catch (err) {
@@ -44,7 +45,7 @@ client.on('messageCreate', async (message) => {
   }
 
   if (cmd === '/status') {
-    const msgCount = chat.historyCount(userId);
+    const msgCount = manager.external.historyCount(userId);
     const libCount = loadLibrary().length;
     const uptimeMs = Date.now() - startTime;
     const hours = Math.floor(uptimeMs / 3600000);
@@ -54,14 +55,26 @@ client.on('messageCreate', async (message) => {
     );
   }
 
+  if (cmd.startsWith('/recall ')) {
+    const query = content.slice(8).trim();
+    if (!query) return message.reply('用法：/recall <问题>');
+    try {
+      const reply = await manager.handleRecall(userId, query);
+      return message.reply(reply);
+    } catch (err) {
+      console.error('[recall error]', err.message);
+      return message.reply('回忆失败，稍后再试');
+    }
+  }
+
   try {
     const imageUrls = [...message.attachments.values()]
       .filter((a) => a.contentType && a.contentType.startsWith('image/'))
       .map((a) => a.url);
-    const reply = await chat.reply(userId, message.content, imageUrls);
+    const reply = await manager.handleMessage(userId, content, imageUrls);
     await message.reply(reply);
   } catch (err) {
-    console.error('[Claude API error]', err.message);
+    console.error('[error]', err.message);
     await message.reply('出了点问题，稍后再试');
   }
 });

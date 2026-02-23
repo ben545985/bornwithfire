@@ -2,14 +2,12 @@ const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 
-const { search } = require('./library');
-
 const MODEL = 'claude-sonnet-4-20250514';
-const SOUL_PATH = path.resolve(__dirname, '../SOUL.md');
+const SOUL_PATH = path.resolve(__dirname, '../../SOUL.md');
 const MAX_MESSAGES = 20;
 const TIMEOUT_MS = 30 * 60 * 1000;
 
-function createChat(anthropicClient) {
+function createExternal(anthropicClient) {
   const client = anthropicClient || new Anthropic();
   const history = new Map();
 
@@ -44,51 +42,6 @@ function createChat(anthropicClient) {
     history.delete(userId);
   }
 
-  async function reply(userId, userMessage, imageUrls) {
-    const messages = getHistory(userId);
-
-    const contentBlocks = [];
-    if (imageUrls && imageUrls.length > 0) {
-      for (const url of imageUrls) {
-        contentBlocks.push({ type: 'image', source: { type: 'url', url } });
-      }
-    }
-    if (userMessage) {
-      contentBlocks.push({ type: 'text', text: userMessage });
-    }
-
-    const content = contentBlocks.length === 1 && contentBlocks[0].type === 'text'
-      ? userMessage
-      : contentBlocks;
-
-    messages.push({ role: 'user', content });
-
-    let systemPrompt = loadSystemPrompt();
-    const libraryHits = search(userMessage || '');
-    if (libraryHits.length > 0) {
-      systemPrompt += '\n\n以下是相关背景资料：\n' + libraryHits.join('\n\n');
-    }
-
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages,
-    });
-
-    const text = response.content[0].text;
-    const { input_tokens, output_tokens } = response.usage;
-    console.log(`[tokens] user=${userId} in=${input_tokens} out=${output_tokens}`);
-
-    const historyText = imageUrls && imageUrls.length > 0
-      ? `[用户发送了${imageUrls.length}张图片] ${userMessage || ''}`
-      : userMessage;
-    pushHistory(userId, 'user', historyText);
-    pushHistory(userId, 'assistant', text);
-
-    return text;
-  }
-
   function historyCount(userId) {
     const entry = history.get(userId);
     if (!entry) return 0;
@@ -120,7 +73,51 @@ function createChat(anthropicClient) {
     return { count, summary };
   }
 
+  async function reply(userId, userMessage, context, imageUrls) {
+    const messages = getHistory(userId);
+
+    const contentBlocks = [];
+    if (imageUrls && imageUrls.length > 0) {
+      for (const url of imageUrls) {
+        contentBlocks.push({ type: 'image', source: { type: 'url', url } });
+      }
+    }
+    if (userMessage) {
+      contentBlocks.push({ type: 'text', text: userMessage });
+    }
+
+    const content = contentBlocks.length === 1 && contentBlocks[0].type === 'text'
+      ? userMessage
+      : contentBlocks;
+
+    messages.push({ role: 'user', content });
+
+    let systemPrompt = loadSystemPrompt();
+    if (context) {
+      systemPrompt += '\n\n以下是系统为你检索并精炼的相关资料：\n' + context;
+    }
+
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages,
+    });
+
+    const text = response.content[0].text;
+    const { input_tokens, output_tokens } = response.usage;
+    console.log(`[external] Sonnet called, tokens in=${input_tokens} out=${output_tokens}`);
+
+    const historyText = imageUrls && imageUrls.length > 0
+      ? `[用户发送了${imageUrls.length}张图片] ${userMessage || ''}`
+      : userMessage;
+    pushHistory(userId, 'user', historyText);
+    pushHistory(userId, 'assistant', text);
+
+    return text;
+  }
+
   return { reply, getHistory, pushHistory, clearHistory, historyCount, compress };
 }
 
-module.exports = { createChat };
+module.exports = { createExternal };
