@@ -21,12 +21,25 @@ function parseFile(raw) {
   return { tags, summary, content };
 }
 
-function loadLibrary() {
-  if (!fs.existsSync(LIBRARY_DIR)) return [];
+function scanDir(dir, prefix) {
+  if (!fs.existsSync(dir)) return [];
+  const results = [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      results.push(...scanDir(path.join(dir, entry.name), rel));
+    } else if (entry.name.endsWith('.md')) {
+      results.push({ file: rel, fullPath: path.join(dir, entry.name) });
+    }
+  }
+  return results;
+}
 
-  const files = fs.readdirSync(LIBRARY_DIR).filter((f) => f.endsWith('.md'));
-  return files.map((file) => {
-    const raw = fs.readFileSync(path.join(LIBRARY_DIR, file), 'utf-8');
+function loadLibrary() {
+  const files = scanDir(LIBRARY_DIR, '');
+  return files.map(({ file, fullPath }) => {
+    const raw = fs.readFileSync(fullPath, 'utf-8');
     const parsed = parseFile(raw);
     if (!parsed) return null;
     return { file, ...parsed };
@@ -61,12 +74,33 @@ function getAllSummaries() {
 }
 
 function getFileContent(filename) {
-  const filePath = path.join(LIBRARY_DIR, filename);
-  if (!fs.existsSync(filePath)) return null;
+  // Try direct path first, then scan
+  let filePath = path.join(LIBRARY_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    // Search recursively
+    const all = scanDir(LIBRARY_DIR, '');
+    const found = all.find((f) => f.file === filename || f.file.endsWith('/' + filename));
+    if (!found) return null;
+    filePath = found.fullPath;
+  }
   const raw = fs.readFileSync(filePath, 'utf-8');
   const parsed = parseFile(raw);
   if (!parsed) return null;
   return { filename, content: parsed.content };
 }
 
-module.exports = { loadLibrary, search, getAllSummaries, getFileContent };
+function getRawFileContent(filename) {
+  let filePath = path.join(LIBRARY_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    const all = scanDir(LIBRARY_DIR, '');
+    const found = all.find((f) => f.file === filename || f.file.endsWith('/' + filename));
+    if (!found) return null;
+    filePath = found.fullPath;
+  }
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const parsed = parseFile(raw);
+  if (!parsed) return null;
+  return { filename, content: parsed.content, fullContent: raw };
+}
+
+module.exports = { loadLibrary, search, getAllSummaries, getFileContent, getRawFileContent };

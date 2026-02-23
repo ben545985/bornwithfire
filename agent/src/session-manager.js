@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const library = require('./library');
 const internal = require('./sessions/internal');
 const { createExternal } = require('./sessions/external');
@@ -9,6 +11,14 @@ const COST = {
   sonnet: { input: 21.6 / 1e6, output: 108 / 1e6 },
 };
 
+const MAX_EXTRACT_FILES = 5;
+const EXTRACT_CHAR_LIMIT = 150;
+
+const DISSATISFACTION_KEYWORDS = [
+  '不记得', '忘了', '说过了', '上次说的', '不对', '不是这个',
+  '找不到', '怎么又', '已经告诉你',
+];
+
 function calcCost(provider, inTokens, outTokens) {
   const rate = COST[provider];
   return rate.input * inTokens + rate.output * outTokens;
@@ -16,6 +26,7 @@ function calcCost(provider, inTokens, outTokens) {
 
 function createSessionManager() {
   const external = createExternal();
+  let lastDebugLines = [];
 
   async function resolveContext(message, skipKeyword) {
     const debug = [];
@@ -69,29 +80,42 @@ function createSessionManager() {
       debug.push('🧠 回忆员: 跳过');
     }
 
-    // Step 3: extract if we have files
+    // Step 3: extract per file (max 5 files, 150 chars each)
     let context = '';
     if (hitFiles.length > 0) {
-      try {
-        const rawContent = hitFiles.map((f) => f.content).join('\n---\n');
-        const result = await internal.extract(message, rawContent);
-        dsInTotal += result.usage.input_tokens;
-        dsOutTotal += result.usage.output_tokens;
-        if (result.text !== '无相关内容') {
-          context = result.text;
-          debug.push(`📦 提取员: ${result.inputLen}字 → ${result.outputLen}字`);
-        } else {
-          debug.push('📦 提取员: 无相关内容');
+      const filesToProcess = hitFiles.slice(0, MAX_EXTRACT_FILES);
+      const extractResults = [];
+      const extractDebugParts = [];
+
+      for (const file of filesToProcess) {
+        try {
+          const result = await internal.extract(message, file.content, EXTRACT_CHAR_LIMIT);
+          dsInTotal += result.usage.input_tokens;
+          dsOutTotal += result.usage.output_tokens;
+          if (result.text !== '无相关内容') {
+            extractResults.push(result.text);
+            extractDebugParts.push(`${file.filename}(${result.inputLen}字→${result.outputLen}字)`);
+          }
+        } catch (err) {
+          console.error(`[manager] extract error for ${file.filename}:`, err.message);
         }
-      } catch (err) {
-        console.error('[manager] extract error:', err.message);
-        debug.push(`📦 提取员: 出错 - ${err.message}`);
+      }
+
+      if (extractResults.length > 0) {
+        context = extractResults.join('\n\n');
+        debug.push(`📦 提取员: ${extractDebugParts.join(' + ')}`);
+      } else {
+        debug.push('📦 提取员: 无相关内容');
       }
     } else {
       debug.push('📦 提取员: 跳过');
     }
 
     return { context, debug, dsInTotal, dsOutTotal };
+  }
+
+  function detectDissatisfaction(message) {
+    return DISSATISFACTION_KEYWORDS.some((kw) => message.includes(kw));
   }
 
   async function handleMessage(userId, message, imageUrls) {
@@ -104,7 +128,10 @@ function createSessionManager() {
     const sonnetCost = calcCost('sonnet', result.input_tokens, result.output_tokens);
     debug.push(`💰 本次成本: DeepSeek ¥${dsCost.toFixed(4)} + Sonnet ¥${sonnetCost.toFixed(4)}`);
 
-    return { reply: result.text, debug };
+    lastDebugLines = debug;
+    const dissatisfied = detectDissatisfaction(message);
+
+    return { reply: result.text, debug, dissatisfied };
   }
 
   async function handleRecall(userId, query) {
@@ -117,10 +144,63 @@ function createSessionManager() {
     const sonnetCost = calcCost('sonnet', result.input_tokens, result.output_tokens);
     debug.push(`💰 本次成本: DeepSeek ¥${dsCost.toFixed(4)} + Sonnet ¥${sonnetCost.toFixed(4)}`);
 
+    lastDebugLines = debug;
+
     return { reply: result.text, debug };
   }
 
-  return { handleMessage, handleRecall, external };
+  async function handleEvolve(userId) {
+    const chatHistory = external.getHistory(userId);
+    const debugLog = lastDebugLines.join('\n');
+
+    // Find the complaint (last user message)
+    const lastUserMsg = [...chatHistory].reverse().find((m) => m.role === 'user');
+    const complaint = lastUserMsg ? lastUserMsg.content : '用户不满意';
+
+    const diagnosisText = await internal.diagnose(complaint, chatHistory, debugLog);
+    const proposalText = await internal.propose(diagnosisText);
+    const verdict = await internal.judge(diagnosisText, proposalText);
+
+    // Auto-execute safe operations
+    let actionResult = '';
+    if (verdict.decision === 'approve') {
+      const action = verdict.action || '';
+      // Safe: create new empty md file
+      const newFileMatch = action.match(/新建.*?(\S+\.md)/);
+      if (newFileMatch) {
+        const newFile = newFileMatch[1];
+        const libDir = path.resolve(__dirname, '../library');
+        const filePath = path.join(libDir, newFile);
+        if (!fs.existsSync(filePath)) {
+          fs.writeFileSync(filePath, `---\ntags: 待补充\nsummary: 待补充\n---\n待补充内容\n`);
+          actionResult = `已自动创建 library/${newFile}`;
+        } else {
+          actionResult = `library/${newFile} 已存在，跳过创建`;
+        }
+      }
+      // Safe: add tags to existing file
+      const addTagMatch = action.match(/新增.*?tag.*?[：:](.+)/);
+      if (addTagMatch && !actionResult) {
+        actionResult = `建议新增 tag: ${addTagMatch[1].trim()}（需手动编辑文件）`;
+      }
+      if (!actionResult) {
+        actionResult = `批准操作: ${action}`;
+      }
+    } else if (verdict.decision === 'human_review') {
+      actionResult = '⏳ 等待人类审批';
+    } else {
+      actionResult = `已拒绝: ${verdict.reason || '不安全的操作'}`;
+    }
+
+    return {
+      diagnosis: diagnosisText,
+      proposal: proposalText,
+      verdict,
+      actionResult,
+    };
+  }
+
+  return { handleMessage, handleRecall, handleEvolve, external };
 }
 
 module.exports = { createSessionManager };
