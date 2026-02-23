@@ -28,15 +28,18 @@ async function recall(userMessage, summaries) {
   });
 
   const text = response.choices[0].message.content.trim();
+  const usage = response.usage || {};
   console.log(`[internal:recall] DeepSeek returned: ${text}`);
 
+  let filenames;
   try {
-    return JSON.parse(text);
+    filenames = JSON.parse(text);
   } catch {
     const match = text.match(/\[[\s\S]*\]/);
-    if (match) return JSON.parse(match[0]);
-    return [];
+    filenames = match ? JSON.parse(match[0]) : [];
   }
+
+  return { filenames, usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 } };
 }
 
 async function extract(userMessage, fileContents) {
@@ -58,8 +61,10 @@ async function extract(userMessage, fileContents) {
   });
 
   const text = response.choices[0].message.content.trim();
+  const usage = response.usage || {};
   console.log(`[internal:extract] compressed ${inputLen} chars → ${text.length} chars`);
-  return text;
+
+  return { text, inputLen, outputLen: text.length, usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 } };
 }
 
 module.exports = { recall, extract };

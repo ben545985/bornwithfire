@@ -1,7 +1,7 @@
 # Project Status
 Phase: 2 — Dual-Session Architecture
-Current: M2.1 complete
-Next: M2.2
+Current: M2.2 complete
+Next: M2.3
 Last updated: 2026-02-23
 
 ## Completed
@@ -12,3 +12,4 @@ Last updated: 2026-02-23
 - M1.4 — 图书馆/长期记忆 (library/ 目录, tag匹配, system prompt注入)
 - M1.5 — 手动对话控制 (/reset, /compress, /status 命令)
 - M2.1 — 双session架构 (DeepSeek内部recall+extract, Sonnet外部回复, session-manager调度)
+- M2.2 — 调试频道 (#bwf-debug, 流程追踪, 成本计算)

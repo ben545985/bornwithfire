@@ -114,7 +114,7 @@ function createExternal(anthropicClient) {
     pushHistory(userId, 'user', historyText);
     pushHistory(userId, 'assistant', text);
 
-    return text;
+    return { text, contextLen: context ? context.length : 0, input_tokens, output_tokens };
   }
 
   return { reply, getHistory, pushHistory, clearHistory, historyCount, compress };
