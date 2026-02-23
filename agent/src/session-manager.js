@@ -116,11 +116,20 @@ function createSessionManager() {
     return DISSATISFACTION_KEYWORDS.some((kw) => message.includes(kw));
   }
 
+  function addSearchDebug(debug, result) {
+    if (result.searchQueries && result.searchQueries.length > 0) {
+      debug.push(`🌐 搜索: 使用了 web_search，查询 "${result.searchQueries.join('", "')}"`);
+    } else {
+      debug.push('🌐 搜索: 未触发');
+    }
+  }
+
   async function handleMessage(userId, message, imageUrls) {
     const { context, debug, dsInTotal, dsOutTotal } = await resolveContext(message);
     const result = await external.reply(userId, message, context, imageUrls);
 
     debug.push(`💬 外部session: context ${result.contextLen}字, in=${result.input_tokens} out=${result.output_tokens}`);
+    addSearchDebug(debug, result);
 
     const dsCost = calcCost('deepseek', dsInTotal, dsOutTotal);
     const sonnetCost = calcCost('sonnet', result.input_tokens, result.output_tokens);
@@ -132,11 +141,31 @@ function createSessionManager() {
     return { reply: result.text, debug, dissatisfied };
   }
 
+  async function handleSearch(userId, query) {
+    const debug = [];
+    debug.push('🔍 关键词: 跳过（/search）');
+    debug.push('🧠 回忆员: 跳过');
+    debug.push('📦 提取员: 跳过');
+
+    const result = await external.reply(userId, query, '', null, { forceSearch: true });
+
+    debug.push(`💬 外部session: in=${result.input_tokens} out=${result.output_tokens}`);
+    addSearchDebug(debug, result);
+
+    const sonnetCost = calcCost('sonnet', result.input_tokens, result.output_tokens);
+    debug.push(`💰 本次成本: Sonnet ¥${sonnetCost.toFixed(4)}`);
+
+    lastDebugLines = debug;
+
+    return { reply: result.text, debug };
+  }
+
   async function handleRecall(userId, query) {
     const { context, debug, dsInTotal, dsOutTotal } = await resolveContext(query, true);
     const result = await external.reply(userId, query, context);
 
     debug.push(`💬 外部session: context ${result.contextLen}字, in=${result.input_tokens} out=${result.output_tokens}`);
+    addSearchDebug(debug, result);
 
     const dsCost = calcCost('deepseek', dsInTotal, dsOutTotal);
     const sonnetCost = calcCost('sonnet', result.input_tokens, result.output_tokens);
@@ -203,7 +232,7 @@ function createSessionManager() {
     };
   }
 
-  return { handleMessage, handleRecall, handleEvolve, external };
+  return { handleMessage, handleRecall, handleSearch, handleEvolve, external };
 }
 
 module.exports = { createSessionManager };

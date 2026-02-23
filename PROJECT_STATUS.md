@@ -1,6 +1,6 @@
 # Project Status
 Phase: 2 — Dual-Session Architecture
-Current: M2.3 complete
+Current: M2.4 complete
 Next: M3.1
 Last updated: 2026-02-23
 
@@ -11,6 +11,7 @@ Last updated: 2026-02-23
 - 人格: SOUL.md（含 [thinking:] 思考过程）
 - 短期记忆: per-user Map, 最近 20 条消息, 30 分钟超时
 - 支持图片识别（Discord 附件 → Claude vision）
+- 支持网络搜索（Anthropic 内置 web_search 工具, 自动或 /search 强制触发）
 
 ### 内部专员（DeepSeek, 无历史, 每次独立调用）
 - 回忆员 (recall) — 从文件摘要中找相关文件, 返回 JSON 文件名数组
@@ -43,6 +44,7 @@ diagnose → propose → judge
 - /reset — 清空对话历史
 - /compress — 手动压缩对话（DeepSeek, summary + facts）
 - /status — 显示状态（历史条数, 图书馆文件数, 运行时间）
+- /search <问题> — 强制触发网络搜索
 - /recall <问题> — 跳过关键词, 强制调用回忆员
 - /fullload <文件名> — 跳过提取员, 全文注入 context
 - /library — 列出图书馆所有文件和摘要
@@ -59,6 +61,7 @@ diagnose → propose → judge
 - M2.1 — 双 session 架构
 - M2.2 — 调试频道
 - M2.3 — 大更新（压缩员迁移, 自动压缩, 多文件提取, 三贤人, 不满检测）
+- M2.4 — 网络搜索能力（web_search 内置工具, /search 命令）
 
 ## 关键文件
 - agent/src/index.js — Discord 入口, 命令路由

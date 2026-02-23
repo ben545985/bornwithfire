@@ -133,6 +133,19 @@ client.on('messageCreate', async (message) => {
     );
   }
 
+  if (cmd.startsWith('/search ')) {
+    const query = content.slice(8).trim();
+    if (!query) return message.reply('用法：/search <问题>');
+    try {
+      const { reply, debug } = await manager.handleSearch(userId, query);
+      sendDebug([`🌐 /search: ${query.slice(0, 50)}`, ...debug]);
+      return message.reply(reply);
+    } catch (err) {
+      console.error('[search error]', err.message);
+      return message.reply('搜索失败，稍后再试');
+    }
+  }
+
   if (cmd.startsWith('/recall ')) {
     const query = content.slice(8).trim();
     if (!query) return message.reply('用法：/recall <问题>');

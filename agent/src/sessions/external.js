@@ -135,7 +135,7 @@ function createExternal(anthropicClient) {
     fullloadContext.set(userId, context);
   }
 
-  async function reply(userId, userMessage, context, imageUrls) {
+  async function reply(userId, userMessage, context, imageUrls, opts) {
     const messages = getHistory(userId);
 
     const contentBlocks = [];
@@ -166,17 +166,44 @@ function createExternal(anthropicClient) {
     if (mergedContext) {
       systemPrompt += '\n\n以下是系统为你检索并精炼的相关资料：\n' + mergedContext;
     }
+    if (opts && opts.forceSearch) {
+      systemPrompt += '\n\n用户明确要求搜索，请使用 web_search 工具查找最新信息。';
+    }
 
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: systemPrompt,
       messages,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
     });
 
-    const text = response.content[0].text;
+    // Extract text and search info from response content blocks
+    const textParts = [];
+    const searchQueries = [];
+    for (const block of response.content) {
+      if (block.type === 'text') {
+        textParts.push(block.text);
+      } else if (block.type === 'web_search_tool_result') {
+        // Extract search queries from the search result block
+        if (block.content) {
+          for (const item of block.content) {
+            if (item.type === 'web_search_result') {
+              // Collect URL for logging
+            }
+          }
+        }
+      } else if (block.type === 'server_tool_use' && block.name === 'web_search') {
+        if (block.input && block.input.query) {
+          searchQueries.push(block.input.query);
+        }
+      }
+    }
+
+    const text = textParts.join('\n\n');
     const { input_tokens, output_tokens } = response.usage;
-    console.log(`[external] Sonnet called, tokens in=${input_tokens} out=${output_tokens}`);
+    const usedSearch = searchQueries.length > 0;
+    console.log(`[external] Sonnet called, tokens in=${input_tokens} out=${output_tokens}${usedSearch ? `, search: ${searchQueries.join(', ')}` : ''}`);
 
     const historyText = imageUrls && imageUrls.length > 0
       ? `[用户发送了${imageUrls.length}张图片] ${userMessage || ''}`
@@ -186,7 +213,7 @@ function createExternal(anthropicClient) {
 
     resetTimer(userId);
 
-    return { text, contextLen: mergedContext ? mergedContext.length : 0, input_tokens, output_tokens };
+    return { text, contextLen: mergedContext ? mergedContext.length : 0, input_tokens, output_tokens, searchQueries };
   }
 
   return { reply, getHistory, pushHistory, clearHistory, historyCount, compress, setFullloadContext, setAutoCompressCallback };
