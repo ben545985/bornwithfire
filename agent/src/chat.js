@@ -42,9 +42,24 @@ function createChat(anthropicClient) {
     history.delete(userId);
   }
 
-  async function reply(userId, userMessage) {
+  async function reply(userId, userMessage, imageUrls) {
     const messages = getHistory(userId);
-    messages.push({ role: 'user', content: userMessage });
+
+    const contentBlocks = [];
+    if (imageUrls && imageUrls.length > 0) {
+      for (const url of imageUrls) {
+        contentBlocks.push({ type: 'image', source: { type: 'url', url } });
+      }
+    }
+    if (userMessage) {
+      contentBlocks.push({ type: 'text', text: userMessage });
+    }
+
+    const content = contentBlocks.length === 1 && contentBlocks[0].type === 'text'
+      ? userMessage
+      : contentBlocks;
+
+    messages.push({ role: 'user', content });
 
     const response = await client.messages.create({
       model: MODEL,
@@ -57,7 +72,10 @@ function createChat(anthropicClient) {
     const { input_tokens, output_tokens } = response.usage;
     console.log(`[tokens] user=${userId} in=${input_tokens} out=${output_tokens}`);
 
-    pushHistory(userId, 'user', userMessage);
+    const historyText = imageUrls && imageUrls.length > 0
+      ? `[用户发送了${imageUrls.length}张图片] ${userMessage || ''}`
+      : userMessage;
+    pushHistory(userId, 'user', historyText);
     pushHistory(userId, 'assistant', text);
 
     return text;

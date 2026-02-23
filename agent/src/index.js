@@ -23,7 +23,10 @@ client.on('messageCreate', async (message) => {
   if (message.channel.name !== CHANNEL_NAME) return;
 
   try {
-    const reply = await chat.reply(message.author.id, message.content);
+    const imageUrls = [...message.attachments.values()]
+      .filter((a) => a.contentType && a.contentType.startsWith('image/'))
+      .map((a) => a.url);
+    const reply = await chat.reply(message.author.id, message.content, imageUrls);
     await message.reply(reply);
   } catch (err) {
     console.error('[Claude API error]', err.message);
