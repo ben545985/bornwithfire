@@ -106,6 +106,19 @@ function createExternal(anthropicClient) {
     return entry.messages.length;
   }
 
+  function replaceHistory(userId, newMessages) {
+    const entry = history.get(userId);
+    const cumTokens = entry && entry.cumTokens ? entry.cumTokens : { input: 0, output: 0, turns: 0 };
+    history.set(userId, {
+      messages: newMessages,
+      lastTime: Date.now(),
+      truncated: false,
+      cumTokens,
+    });
+    resetTimer(userId);
+    saveHistory();
+  }
+
   function resetTimer(userId) {
     if (timers.has(userId)) {
       clearTimeout(timers.get(userId));
@@ -287,7 +300,7 @@ function createExternal(anthropicClient) {
   // Load persisted history on startup
   loadHistory();
 
-  return { reply, getHistory, pushHistory, clearHistory, historyCount, compress, setFullloadContext, setAutoCompressCallback, saveHistory };
+  return { reply, getHistory, pushHistory, clearHistory, replaceHistory, historyCount, compress, setFullloadContext, setAutoCompressCallback, saveHistory };
 }
 
 module.exports = { createExternal };

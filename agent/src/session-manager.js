@@ -38,7 +38,7 @@ function calcCost(provider, inTokens, outTokens) {
 function createSessionManager() {
   const external = createExternal(createOAuthClient());
   let lastDebugLines = [];
-  const pendingAction = new Map(); // userId → { action: 'reset'|'compress', ts: number }
+  const pendingAction = new Map(); // userId → { action: 'reset'|'compress'|'smart-compress', ts: number, topics?, messages? }
 
   async function resolveContext(message, skipKeyword) {
     const debug = [];
@@ -192,6 +192,89 @@ function createSessionManager() {
             lastDebugLines = debug;
             return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
           }
+        } else if (pending.action === 'smart-compress') {
+          try {
+            const { topics, messages: snapMessages } = pending;
+            const topicCount = topics.length;
+
+            // Parse user's choices
+            const { choices, usage: parseUsage } = await internal.parseTopicChoices(message, topicCount);
+            dsInTotal += parseUsage.input_tokens;
+            dsOutTotal += parseUsage.output_tokens;
+            debug.push(`📎 解析选择: ${JSON.stringify(choices)}`);
+
+            // Check if all "keep" — no-op
+            const allKeep = Object.values(choices).every((v) => v === 'keep');
+            if (allKeep) {
+              debug.push('📎 全部保留，无需操作');
+              const result = await external.reply(userId, message, '【系统提示】用户选择保留所有话题，对话保持原样。请告知用户。', imageUrls);
+              appendTranscript(userId, 'assistant', result.text);
+              lastDebugLines = debug;
+              return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+            }
+
+            // Check if all "cut" — equivalent to reset
+            const allCut = Object.values(choices).every((v) => v === 'cut');
+            if (allCut) {
+              external.clearHistory(userId);
+              debug.push('📎 全部切除，等同 reset');
+              const result = await external.reply(userId, message, '【系统提示】用户选择丢弃所有话题，对话历史已清空。请告知用户对话已重新开始。', imageUrls);
+              appendTranscript(userId, 'assistant', result.text);
+              lastDebugLines = debug;
+              return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+            }
+
+            // Process each topic
+            const compressorPrompt = fs.readFileSync(path.resolve(__dirname, '../COMPRESSOR_PROMPT.md'), 'utf-8').trim();
+            const newMessages = [];
+            const resultParts = [];
+            let cutCount = 0, compressCount = 0, keepCount = 0;
+
+            for (let i = 0; i < topicCount; i++) {
+              const topic = topics[i];
+              const choice = choices[i + 1] || 'keep';
+              const topicMessages = snapMessages.slice(topic.start, topic.end + 1);
+
+              if (choice === 'cut') {
+                cutCount++;
+                resultParts.push(`"${topic.topic}"：已丢弃（${topic.msg_count}条）`);
+              } else if (choice === 'compress') {
+                compressCount++;
+                try {
+                  const compressed = await internal.compress(topicMessages, compressorPrompt);
+                  newMessages.push({ role: 'assistant', content: `[话题"${topic.topic}"的摘要] ${compressed.summary}` });
+                  resultParts.push(`"${topic.topic}"：已压缩为摘要（${topic.msg_count}条→1条）`);
+                } catch (err) {
+                  console.error(`[smart-compress] compress topic "${topic.topic}" error:`, err.message);
+                  // On error, keep original messages
+                  newMessages.push(...topicMessages);
+                  resultParts.push(`"${topic.topic}"：压缩失败，已保留原始消息`);
+                }
+              } else {
+                keepCount++;
+                newMessages.push(...topicMessages);
+                resultParts.push(`"${topic.topic}"：已保留（${topic.msg_count}条）`);
+              }
+            }
+
+            // Replace history
+            external.replaceHistory(userId, newMessages);
+            debug.push(`📎 smart-compress 完成: 切${cutCount} 压${compressCount} 留${keepCount}，剩余${newMessages.length}条`);
+
+            const resultSummary = resultParts.map((p) => `• ${p}`).join('\n');
+            const contextParts = [`【系统提示】精细化压缩已完成。请用你自己的语气告知用户结果：\n${resultSummary}\n\n当前对话剩余 ${newMessages.length} 条消息。`];
+            const result = await external.reply(userId, message, contextParts.join('\n\n'), imageUrls);
+            appendTranscript(userId, 'assistant', result.text);
+            lastDebugLines = debug;
+            return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+          } catch (err) {
+            console.error('[smart-compress] execution error:', err.message);
+            debug.push(`📎 smart-compress 失败: ${err.message}`);
+            const result = await external.reply(userId, message, '【系统提示】精细化压缩执行时出错，请告知用户稍后再试。', imageUrls);
+            appendTranscript(userId, 'assistant', result.text);
+            lastDebugLines = debug;
+            return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+          }
         }
       }
       // No pending action or expired — treat as normal message
@@ -211,15 +294,61 @@ function createSessionManager() {
     }
 
     if (control === 'compress') {
-      pendingAction.set(userId, { action: 'compress', ts: Date.now() });
-      debug.push('📎 待确认: compress');
       const msgCount = external.historyCount(userId);
-      const contextParts = [`【系统提示】用户想压缩当前对话。当前有 ${msgCount} 条消息。请用你自己的语气向用户确认：告诉他们压缩会将对话历史精简为摘要，问他们确定要这样做吗。等待用户确认后再执行。`];
-      const result = await external.reply(userId, message, contextParts.join('\n\n'), imageUrls);
-      appendTranscript(userId, 'assistant', result.text);
-      debug.push(`💬 外部session: in=${result.input_tokens} out=${result.output_tokens}`);
-      lastDebugLines = debug;
-      return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+      const messages = external.getHistory(userId);
+
+      // Short conversations (≤4 messages): use simple compress flow
+      if (msgCount <= 4) {
+        pendingAction.set(userId, { action: 'compress', ts: Date.now() });
+        debug.push('📎 待确认: compress（简单模式）');
+        const contextParts = [`【系统提示】用户想压缩当前对话。当前有 ${msgCount} 条消息。请用你自己的语气向用户确认：告诉他们压缩会将对话历史精简为摘要，问他们确定要这样做吗。等待用户确认后再执行。`];
+        const result = await external.reply(userId, message, contextParts.join('\n\n'), imageUrls);
+        appendTranscript(userId, 'assistant', result.text);
+        debug.push(`💬 外部session: in=${result.input_tokens} out=${result.output_tokens}`);
+        lastDebugLines = debug;
+        return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+      }
+
+      // Longer conversations: smart-compress with topic splitting
+      try {
+        const { topics, usage: splitUsage } = await internal.topicSplit(messages);
+        dsInTotal += splitUsage.input_tokens;
+        dsOutTotal += splitUsage.output_tokens;
+        debug.push(`📎 话题拆分: ${topics.length} 个话题`);
+
+        // Only 1 topic or split failed: fall back to simple compress
+        if (topics.length <= 1) {
+          pendingAction.set(userId, { action: 'compress', ts: Date.now() });
+          debug.push('📎 待确认: compress（仅1个话题，退回简单模式）');
+          const contextParts = [`【系统提示】用户想压缩当前对话。分析后发现只有一个话题，当前有 ${msgCount} 条消息。请用你自己的语气向用户确认：告诉他们压缩会将对话历史精简为摘要，问他们确定要这样做吗。等待用户确认后再执行。`];
+          const result = await external.reply(userId, message, contextParts.join('\n\n'), imageUrls);
+          appendTranscript(userId, 'assistant', result.text);
+          debug.push(`💬 外部session: in=${result.input_tokens} out=${result.output_tokens}`);
+          lastDebugLines = debug;
+          return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+        }
+
+        // Multiple topics: present list and ask user to choose
+        pendingAction.set(userId, { action: 'smart-compress', topics, messages: [...messages], ts: Date.now() });
+        const topicList = topics.map((t, i) => `${i + 1}. ${t.topic}（${t.msg_count}条）`).join('\n');
+        const contextParts = [`【系统提示】用户想压缩对话。已按话题拆分，请用你自己的语气列出以下话题，并引导用户对每个话题选择操作（切=丢弃、压=压缩为摘要、留=原样保留）。示例格式："回复比如：1切 2压 3留"\n\n话题列表：\n${topicList}`];
+        const result = await external.reply(userId, message, contextParts.join('\n\n'), imageUrls);
+        appendTranscript(userId, 'assistant', result.text);
+        debug.push(`💬 外部session: in=${result.input_tokens} out=${result.output_tokens}`);
+        lastDebugLines = debug;
+        return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+      } catch (err) {
+        console.error('[smart-compress] topicSplit error:', err.message);
+        // Fall back to simple compress on error
+        pendingAction.set(userId, { action: 'compress', ts: Date.now() });
+        debug.push(`📎 话题拆分失败: ${err.message}，退回简单模式`);
+        const contextParts = [`【系统提示】用户想压缩当前对话。当前有 ${msgCount} 条消息。请用你自己的语气向用户确认：告诉他们压缩会将对话历史精简为摘要，问他们确定要这样做吗。等待用户确认后再执行。`];
+        const result = await external.reply(userId, message, contextParts.join('\n\n'), imageUrls);
+        appendTranscript(userId, 'assistant', result.text);
+        debug.push(`💬 外部session: in=${result.input_tokens} out=${result.output_tokens}`);
+        lastDebugLines = debug;
+        return { reply: result.text, debug, dissatisfied: false, statusBar: buildStatusBar(result, '', userId), cumulative: result.cumulative };
+      }
     }
 
     // === Handle status: collect info, inject as context ===

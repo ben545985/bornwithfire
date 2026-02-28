@@ -219,6 +219,134 @@ async function judge(diagnosis, proposal) {
   }
 }
 
+async function topicSplit(messages) {
+  const chatText = messages
+    .map((m, i) => {
+      const content = typeof m.content === 'string' ? m.content : '[图片消息]';
+      return `[${i}] ${m.role === 'user' ? '用户' : '助手'}：${content}`;
+    })
+    .join('\n');
+
+  const response = await client.chat.completions.create({
+    model: MODEL,
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content: `你是对话分析助手。将以下对话按话题分段。每条消息前有 [索引号]。
+规则：
+- 每个话题包含连续的消息，不能有间隔
+- 所有消息都必须被覆盖，不能遗漏
+- topic 用简短中文描述（10字以内）
+- start 和 end 是消息索引（inclusive）
+- msg_count = end - start + 1
+
+只输出 JSON 数组，不要解释：
+[{"topic": "话题描述", "start": 0, "end": 5, "msg_count": 6}]`,
+      },
+      {
+        role: 'user',
+        content: chatText,
+      },
+    ],
+  });
+
+  const text = response.choices[0].message.content.trim();
+  const usage = response.usage || {};
+  console.log(`[internal:topicSplit] DeepSeek returned: ${text}`);
+
+  let topics;
+  try {
+    topics = JSON.parse(text);
+  } catch {
+    const match = extractFirstArray(text);
+    topics = match ? JSON.parse(match) : [];
+  }
+
+  return {
+    topics: Array.isArray(topics) ? topics : [],
+    usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 },
+  };
+}
+
+async function parseTopicChoices(userMessage, topicCount) {
+  // Try regex first: patterns like "1切 2压 3留", "1 2切 3留", "全切", "都压缩"
+  const choices = {};
+
+  // Check for "全X" / "都X" patterns
+  const allMatch = userMessage.match(/(?:全|都)(切|压|留|压缩|保留|丢|丢弃|删)/);
+  if (allMatch) {
+    const action = allMatch[1].startsWith('压') ? 'compress' : allMatch[1] === '留' || allMatch[1] === '保留' ? 'keep' : 'cut';
+    for (let i = 1; i <= topicCount; i++) choices[i] = action;
+    return { choices, usage: { input_tokens: 0, output_tokens: 0 } };
+  }
+
+  // Try per-topic patterns: "1切 2压 3留" or "1 2切 3留"
+  const actionMap = { '切': 'cut', '丢': 'cut', '丢弃': 'cut', '删': 'cut', '压': 'compress', '压缩': 'compress', '留': 'keep', '保留': 'keep' };
+  // Match groups of numbers followed by an action word
+  const groupPattern = /([\d\s,，、]+)(切|丢弃?|删|压缩?|留|保留)/g;
+  let match;
+  let parsed = false;
+  while ((match = groupPattern.exec(userMessage)) !== null) {
+    const nums = match[1].match(/\d+/g);
+    const action = actionMap[match[2]] || 'keep';
+    if (nums) {
+      for (const n of nums) {
+        const idx = parseInt(n, 10);
+        if (idx >= 1 && idx <= topicCount) {
+          choices[idx] = action;
+          parsed = true;
+        }
+      }
+    }
+  }
+
+  if (parsed && Object.keys(choices).length === topicCount) {
+    return { choices, usage: { input_tokens: 0, output_tokens: 0 } };
+  }
+
+  // Fallback: use DeepSeek to parse
+  const response = await client.chat.completions.create({
+    model: MODEL,
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content: `用户正在对 ${topicCount} 个话题做选择。每个话题可以是以下操作之一：
+- "cut"：丢弃/删除
+- "compress"：压缩
+- "keep"：保留
+
+解析用户的回复，返回 JSON 对象，key 是话题编号（1-${topicCount}），value 是操作。
+例如：{"1": "cut", "2": "compress", "3": "keep"}
+如果无法确定某个话题的操作，默认为 "keep"。只输出 JSON。`,
+      },
+      {
+        role: 'user',
+        content: userMessage,
+      },
+    ],
+  });
+
+  const text = response.choices[0].message.content.trim();
+  const usage = response.usage || {};
+  console.log(`[internal:parseTopicChoices] DeepSeek returned: ${text}`);
+
+  let dsChoices;
+  try {
+    dsChoices = JSON.parse(text);
+  } catch {
+    const objMatch = extractFirstObject(text);
+    dsChoices = objMatch ? JSON.parse(objMatch) : {};
+  }
+
+  const result = {};
+  for (let i = 1; i <= topicCount; i++) {
+    result[i] = dsChoices[String(i)] || choices[i] || 'keep';
+  }
+  return { choices: result, usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 } };
+}
+
 async function detectIntent(userMessage) {
   const response = await client.chat.completions.create({
     model: MODEL,
@@ -291,4 +419,4 @@ async function detectIntent(userMessage) {
   }
 }
 
-module.exports = { recall, extract, compress, diagnose, propose, judge, detectIntent };
+module.exports = { recall, extract, compress, topicSplit, parseTopicChoices, diagnose, propose, judge, detectIntent };
