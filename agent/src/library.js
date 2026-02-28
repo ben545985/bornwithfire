@@ -2,6 +2,14 @@ const fs = require('fs');
 const path = require('path');
 
 const LIBRARY_DIR = path.resolve(__dirname, '../library');
+const CACHE_TTL = 60 * 1000; // 60 seconds
+
+let libraryCache = null;
+let libraryCacheTime = 0;
+
+function invalidateCache() {
+  libraryCache = null;
+}
 
 function parseFile(raw) {
   const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
@@ -37,13 +45,19 @@ function scanDir(dir, prefix) {
 }
 
 function loadLibrary() {
+  if (libraryCache && Date.now() - libraryCacheTime < CACHE_TTL) {
+    return libraryCache;
+  }
   const files = scanDir(LIBRARY_DIR, '');
-  return files.map(({ file, fullPath }) => {
+  const result = files.map(({ file, fullPath }) => {
     const raw = fs.readFileSync(fullPath, 'utf-8');
     const parsed = parseFile(raw);
     if (!parsed) return null;
     return { file, ...parsed };
   }).filter(Boolean);
+  libraryCache = result;
+  libraryCacheTime = Date.now();
+  return result;
 }
 
 function tokenize(text) {
@@ -103,4 +117,4 @@ function getRawFileContent(filename) {
   return { filename, content: parsed.content, fullContent: raw };
 }
 
-module.exports = { loadLibrary, search, getAllSummaries, getFileContent, getRawFileContent };
+module.exports = { loadLibrary, search, getAllSummaries, getFileContent, getRawFileContent, invalidateCache };

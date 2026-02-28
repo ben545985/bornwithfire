@@ -1,5 +1,35 @@
 const OpenAI = require('openai');
 
+// Extracts the first complete JSON object from text using brace counting,
+// avoiding the greedy regex pitfall of matching outermost braces incorrectly.
+function extractFirstObject(text) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function extractFirstArray(text) {
+  const start = text.indexOf('[');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '[') depth++;
+    else if (text[i] === ']') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 const client = new OpenAI({
   baseURL: 'https://api.deepseek.com',
   apiKey: process.env.DEEPSEEK_API_KEY,
@@ -35,8 +65,8 @@ async function recall(userMessage, summaries) {
   try {
     filenames = JSON.parse(text);
   } catch {
-    const match = text.match(/\[[\s\S]*\]/);
-    filenames = match ? JSON.parse(match[0]) : [];
+    const match = extractFirstArray(text);
+    filenames = match ? JSON.parse(match) : [];
   }
 
   return { filenames, usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 } };
@@ -70,7 +100,10 @@ async function extract(userMessage, fileContents, maxChars) {
 
 async function compress(messages, compressorPrompt) {
   const chatText = messages
-    .map((m) => `${m.role === 'user' ? '用户' : '助手'}：${m.content}`)
+    .map((m) => {
+      const content = typeof m.content === 'string' ? m.content : '[图片消息]';
+      return `${m.role === 'user' ? '用户' : '助手'}：${content}`;
+    })
     .join('\n\n');
 
   const response = await client.chat.completions.create({
@@ -94,10 +127,10 @@ async function compress(messages, compressorPrompt) {
       usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 },
     };
   } catch {
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const jsonMatch = extractFirstObject(text);
     if (jsonMatch) {
       try {
-        const parsed = JSON.parse(jsonMatch[0]);
+        const parsed = JSON.parse(jsonMatch);
         return {
           summary: parsed.summary || '',
           facts: Array.isArray(parsed.facts) ? parsed.facts : [],
@@ -115,7 +148,10 @@ async function compress(messages, compressorPrompt) {
 
 async function diagnose(complaint, chatHistory, debugLog) {
   const historyText = chatHistory
-    .map((m) => `${m.role === 'user' ? '用户' : '助手'}：${m.content}`)
+    .map((m) => {
+      const content = typeof m.content === 'string' ? m.content : '[图片消息]';
+      return `${m.role === 'user' ? '用户' : '助手'}：${content}`;
+    })
     .join('\n');
 
   const response = await client.chat.completions.create({
@@ -175,12 +211,84 @@ async function judge(diagnosis, proposal) {
   try {
     return JSON.parse(text);
   } catch {
-    const match = text.match(/\{[\s\S]*\}/);
+    const match = extractFirstObject(text);
     if (match) {
-      try { return JSON.parse(match[0]); } catch { /* fall through */ }
+      try { return JSON.parse(match); } catch { /* fall through */ }
     }
     return { one_time_action: 'none', system_suggestion: text };
   }
 }
 
-module.exports = { recall, extract, compress, diagnose, propose, judge };
+async function detectIntent(userMessage) {
+  const response = await client.chat.completions.create({
+    model: MODEL,
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content: `分析用户消息的意图。判断两件事：
+
+1. 是否需要联网搜索？搜索门槛要低——只要消息涉及任何事实、人物、地点、事件、价格、新闻、天气、产品、公司、法律、科技、文化等话题，都应该搜索。只有纯粹的闲聊、情感表达、创意写作、或明确针对私人记忆的问题才不需要搜索。
+
+2. 用户的控制意图是什么？用户可能用自然语言或斜杠命令表达以下意图：
+   - "reset"：清空对话（如"重新开始"、"清空记忆"、"忘掉之前说的"、"新话题"、"/reset"）
+   - "compress"：压缩对话（如"压缩一下"、"总结一下对话"、"帮我精简上下文"、"/compress"）
+   - "status"：查看状态（如"你什么状态"、"现在情况怎样"、"/ping"、"/status"）
+   - "search"：主动搜索（如"搜一下XX"、"帮我查查XX"、"/search XX"）— args 填搜索词
+   - "recall"：回忆图书馆（如"你还记得XX吗"、"回忆一下XX"、"/recall XX"）— args 填查询词
+   - "fullload"：加载文件（如"加载XX文件"、"把XX载入上下文"、"/fullload XX"）— args 填文件名
+   - "library"：查看图书馆（如"图书馆有什么"、"列出所有文件"、"/library"）
+   - "evolve"：自检改进（如"自检一下"、"分析一下问题"、"/evolve"）
+   - "confirm"：用户确认执行待定操作（如"好的"、"确认"、"执行吧"、"是的"）— 仅当上文有待确认操作时才用
+   - "none"：普通对话，不是控制指令
+
+注意：
+- 当 control 是 search/recall/fullload 时，必须从用户消息中提取 args（搜索词/查询词/文件名）
+- 当 control 是 search 时，need_search 应为 false（搜索由系统单独处理）
+- "confirm" 仅用于用户明确表示同意/确认的简短回复，不要把普通对话误判为 confirm
+
+只输出 JSON：{"need_search": true/false, "query": "搜索词", "control": "none/reset/compress/status/search/recall/fullload/library/evolve/confirm", "args": "参数"}`,
+      },
+      {
+        role: 'user',
+        content: userMessage,
+      },
+    ],
+  });
+
+  const text = response.choices[0].message.content.trim();
+  const usage = response.usage || {};
+  console.log(`[internal:intent] DeepSeek returned: ${text}`);
+
+  const defaults = {
+    needSearch: false,
+    query: '',
+    control: 'none',
+    args: '',
+    usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 },
+  };
+
+  function parseIntent(parsed) {
+    return {
+      ...defaults,
+      needSearch: !!parsed.need_search,
+      query: parsed.query || '',
+      control: parsed.control || 'none',
+      args: parsed.args || '',
+    };
+  }
+
+  try {
+    return parseIntent(JSON.parse(text));
+  } catch {
+    const match = extractFirstObject(text);
+    if (match) {
+      try {
+        return parseIntent(JSON.parse(match));
+      } catch { /* fall through */ }
+    }
+    return defaults;
+  }
+}
+
+module.exports = { recall, extract, compress, diagnose, propose, judge, detectIntent };
